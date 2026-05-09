@@ -1,0 +1,479 @@
+
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+*{margin:0;padding:0;box-sizing:border-box}
+#root{background:#111;display:flex;flex-direction:column;align-items:center;padding:8px;gap:0}
+#step-bar{width:520px;background:#1a1a2e;border:3px solid #ffe082;border-bottom:none;padding:10px 14px;font-family:'Press Start 2P',monospace;font-size:9px;color:#ffe082;line-height:1.8}
+#step-bar span{color:#00e5ff}
+canvas{border:3px solid #ffe082;display:block;image-rendering:pixelated;cursor:default}
+#dlg{width:520px;background:#0a0a18;border:3px solid #ffe082;border-top:2px solid #333;padding:10px 14px;font-family:'Press Start 2P',monospace;font-size:9px;color:#fff;line-height:2;min-height:64px;cursor:pointer}
+#keys{width:520px;background:#06060f;font-family:'Press Start 2P',monospace;font-size:8px;color:#555;padding:5px 14px;text-align:center}
+</style>
+<div id="root">
+<div id="step-bar">STEP: <span id="steptext">Walk UP to the OLD MAN and press SPACE</span></div>
+<canvas id="c" width="520" height="420"></canvas>
+<div id="dlg" id="dlg"><span style="color:#ffe082">You are the YELLOW character!</span> Walk UP toward the old man and press <span style="color:#00e5ff">SPACE</span> to talk.</div>
+<div id="keys">↑ ↓ ← → or W A S D = Move &nbsp;&nbsp;|&nbsp;&nbsp; SPACE = Talk / Attack / Collect &nbsp;&nbsp;|&nbsp;&nbsp; Click text box to skip dialogue</div>
+</div>
+<script>
+const cv=document.getElementById('c'),ctx=cv.getContext('2d');
+const dlgEl=document.getElementById('dlg'),stepEl=document.getElementById('steptext');
+const W=520,H=420;
+
+let scene='WORLD'; // WORLD | VILLAGE | DUNGEON
+let px=260,py=310;
+const SPD=3;
+let keys={};
+let tick=0;
+let hp=5,shards=0;
+let dmgcd=0;
+let won=false;
+let dialog=null,dIdx=0,dCb=null;
+let particles=[];
+let sageTalked=false;
+
+const villagers=[
+  {x:110,y:180,name:'FARMER',color:'#6dbf67',color2:'#4a9945',talked:false,lines:['FARMER: A shadow stole','the Crystal and broke it!','Here — I found a piece.','Take this SHARD!'],givesShard:true},
+  {x:380,y:200,name:'WITCH',color:'#ce93d8',color2:'#9c5faa',talked:false,lines:['WITCH: The dungeon is','at the TOP of the village.','Defeat all shadows there','to win the game!'],givesShard:false},
+  {x:250,y:290,name:'KID',color:'#ffb74d',color2:'#cc8820',talked:false,lines:['KID: I was so scared...','A shadow dropped this!','You can have it.','Take this SHARD!'],givesShard:true},
+];
+const groundShard={x:390,y:300,taken:false};
+
+const enemies=[
+  {x:120,y:150,hp:3,alive:true,vx:1.4},
+  {x:380,y:170,hp:3,alive:true,vx:-1.2},
+  {x:180,y:290,hp:3,alive:true,vx:1.1},
+  {x:340,y:280,hp:3,alive:true,vx:-1.3},
+];
+
+function d(ax,ay,bx,by){return Math.hypot(ax-bx,ay-by)}
+function setStep(t){stepEl.innerHTML=t}
+function setMsg(html){dlgEl.innerHTML=html}
+
+function showDialog(lines,cb){
+  dialog=lines;dIdx=0;dCb=cb;
+  dlgEl.innerHTML=lines[0];
+}
+function nextDialog(){
+  if(!dialog)return;
+  dIdx++;
+  if(dIdx>=dialog.length){
+    const cb=dCb;dialog=null;dCb=null;
+    if(cb)cb();
+  }else{
+    dlgEl.innerHTML=dialog[dIdx];
+  }
+}
+dlgEl.addEventListener('click',nextDialog);
+
+function burst(x,y,col,n=10){
+  for(let i=0;i<n;i++){
+    const a=Math.random()*Math.PI*2,s=2+Math.random()*3;
+    particles.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:1,r:3+Math.random()*4,col});
+  }
+}
+
+function enterVillage(){
+  scene='VILLAGE';px=260;py=360;
+  setMsg('You are in the <span style="color:#81c784">VILLAGE!</span> Talk to the 3 people and pick up the glowing crystal.');
+  setStep('Talk to the 3 VILLAGERS and grab the SHARD on the ground');
+}
+function enterDungeon(){
+  scene='DUNGEON';px=260;py=370;
+  setMsg('<span style="color:#ff5252">DUNGEON!</span> Press SPACE next to each purple SHADOW to hit it. Hit each one 3 times!');
+  setStep('Hit each SHADOW 3 times. Then go to the ALTAR at the top!');
+}
+function backToWorld(){scene='WORLD';px=260;py=310;}
+function backToVillage(){scene='VILLAGE';px=260;py=360;}
+
+document.addEventListener('keydown',e=>{
+  keys[e.code]=true;
+  if(e.code==='Space'){
+    e.preventDefault();
+    if(dialog){nextDialog();return;}
+    doAction();
+  }
+});
+document.addEventListener('keyup',e=>{keys[e.code]=false;});
+
+function doAction(){
+  if(scene==='WORLD'){
+    // Talk to sage at ~260,160
+    if(d(px,py,260,160)<55){
+      sageTalked=true;
+      showDialog([
+        'OLD MAN: The Crystal of Maki',
+        'has been stolen and broken',
+        'into 3 SHARDS!',
+        'Walk UP through the gate',
+        'to enter the VILLAGE.',
+        'Find the shards and',
+        'defeat the shadows!',
+      ],()=>{
+        setMsg('Walk <span style="color:#ffe082">UP</span> through the big <span style="color:#ffe082">GATE</span> to enter the VILLAGE!');
+        setStep('Walk UP through the GATE into the VILLAGE');
+      });
+    }
+  }else if(scene==='VILLAGE'){
+    villagers.forEach(v=>{
+      if(d(px,py,v.x,v.y)<50&&!v.talked){
+        v.talked=true;
+        showDialog(v.lines,()=>{
+          if(v.givesShard){
+            shards++;burst(v.x,v.y,'#00e5ff',14);
+            setMsg(`<span style="color:#00e5ff">GOT A SHARD!</span> You have <span style="color:#ffe082">${shards}/3</span> shards.`);
+            checkShards();
+          }
+        });
+      }else if(d(px,py,v.x,v.y)<50&&v.talked){
+        setMsg('(Already talked to this person.)');
+      }
+    });
+    if(!groundShard.taken&&d(px,py,groundShard.x,groundShard.y)<36){
+      groundShard.taken=true;shards++;
+      burst(groundShard.x,groundShard.y,'#00e5ff',16);
+      setMsg(`<span style="color:#00e5ff">GOT A SHARD!</span> You have <span style="color:#ffe082">${shards}/3</span> shards.`);
+      checkShards();
+    }
+  }else if(scene==='DUNGEON'){
+    let hit=false;
+    enemies.forEach(e=>{
+      if(!e.alive||hit)return;
+      if(d(px,py,e.x,e.y)<52){
+        hit=true;e.hp--;
+        burst(e.x,e.y,'#aa55ff',8);
+        if(e.hp<=0){e.alive=false;burst(e.x,e.y,'#ff88ff',16);}
+        const left=enemies.filter(e=>e.alive).length;
+        setMsg(left===0
+          ?'<span style="color:#ffd700">ALL SHADOWS DEFEATED!</span> Walk to the golden ALTAR at the TOP!'
+          :`Hit! Enemy has <span style="color:#aa55ff">${e.hp}/3</span> HP left. Shadows left: <span style="color:#ffe082">${left}</span>`);
+        if(left===0)setStep('Walk UP to the golden ALTAR and press SPACE!');
+      }
+    });
+    // altar at 260,80
+    if(enemies.every(e=>!e.alive)&&d(px,py,260,80)<55){
+      won=true;
+      showDialog([
+        'You place the shards',
+        'on the Crystal Altar...',
+        'The Crystal blazes',
+        'with golden light!',
+        'The shadows are gone!',
+        'YOU SAVED THE KINGDOM!',
+        '★ THANK YOU FOR PLAYING ★',
+      ],null);
+      setStep('★ YOU WIN! ★');
+    }else if(!enemies.every(e=>!e.alive)&&d(px,py,260,80)<55){
+      setMsg('<span style="color:#ff5252">Defeat ALL shadows first!</span> Press SPACE next to each purple enemy!');
+    }
+  }
+}
+
+function checkShards(){
+  if(shards===1)setStep('Good! Find 2 MORE shards. Talk to other villagers!');
+  if(shards===2)setStep('Almost! Find 1 MORE shard!');
+  if(shards>=3){
+    setStep('ALL 3 SHARDS! Walk UP through the RED GATE to the DUNGEON!');
+    setMsg('<span style="color:#ffd700">ALL 3 SHARDS COLLECTED!</span> Walk <span style="color:#ff5252">UP</span> through the RED gate to enter the DUNGEON!');
+  }
+}
+
+// ─── DRAW HELPERS ─────────────────────────────────────────────────────────────
+
+function pxFont(size){ctx.font=`${size}px 'Press Start 2P', monospace`;}
+
+function drawPerson(x,y,bodyCol,headCol,label,labelCol){
+  const bob=Math.sin(tick*0.07+x*0.01)*2;
+  ctx.fillStyle=bodyCol;ctx.fillRect(x-10,y-14+bob,20,18);
+  ctx.fillStyle=headCol;ctx.fillRect(x-8,y-28+bob,16,16);
+  if(label){
+    pxFont(7);ctx.textAlign='center';
+    ctx.fillStyle='#000';ctx.fillText(label,x+1,y-34+bob);
+    ctx.fillStyle=labelCol||'#fff';ctx.fillText(label,x,y-35+bob);
+    ctx.textAlign='left';
+  }
+}
+
+function drawArrow(x,y,label,col){
+  ctx.fillStyle=col;
+  ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x-12,y+16);ctx.lineTo(x+12,y+16);ctx.closePath();ctx.fill();
+  pxFont(7);ctx.textAlign='center';ctx.fillStyle=col;ctx.fillText(label,x,y+28);ctx.textAlign='left';
+}
+
+function drawWorld(){
+  // sky / ground
+  ctx.fillStyle='#1a2e3a';ctx.fillRect(0,0,W,H);
+  // grass
+  ctx.fillStyle='#1a3020';ctx.fillRect(0,80,W,H-80);
+  // path
+  ctx.fillStyle='#2a2010';ctx.fillRect(220,80,80,H-80);
+
+  // trees
+  [[60,200],[100,260],[420,190],[460,270],[50,320],[480,320]].forEach(([tx,ty])=>{
+    ctx.fillStyle='#2a1408';ctx.fillRect(tx-5,ty,10,20);
+    ctx.fillStyle='#0d3010';ctx.fillRect(tx-18,ty-28,36,20);
+    ctx.fillStyle='#144018';ctx.fillRect(tx-12,ty-42,24,18);
+  });
+
+  // GATE - very obvious
+  ctx.fillStyle='#8B5e00';ctx.fillRect(180,68,40,60);ctx.fillRect(300,68,40,60);
+  ctx.fillStyle='#c8880a';ctx.fillRect(220,60,80,18);
+  pxFont(8);ctx.textAlign='center';
+  ctx.fillStyle='#000';ctx.fillText('VILLAGE GATE',W/2+1,73);
+  ctx.fillStyle='#ffe082';ctx.fillText('VILLAGE GATE',W/2,72);
+  ctx.textAlign='left';
+  // arrow pointing up
+  drawArrow(W/2,90,'GO UP!','#ffe082');
+
+  // sky
+  ctx.fillStyle='#0a1a28';ctx.fillRect(0,0,W,80);
+  // stars
+  [30,80,150,200,320,400,470,500].forEach(sx=>{
+    ctx.fillStyle='#aaaacc';ctx.fillRect(sx,(sx*17)%50+10,2,2);
+  });
+
+  // Old sage
+  const near=d(px,py,260,160)<55;
+  if(near){
+    ctx.fillStyle='rgba(255,220,80,0.18)';ctx.beginPath();ctx.arc(260,160,44,0,Math.PI*2);ctx.fill();
+    pxFont(8);ctx.textAlign='center';ctx.fillStyle='#ffe082';ctx.fillText('PRESS SPACE',260,110);ctx.textAlign='left';
+  }
+  drawPerson(260,165,'#c87040','#f4a261','OLD MAN','#ffe082');
+  pxFont(7);ctx.textAlign='center';
+  ctx.fillStyle='#ffd700';ctx.fillText('?',260,132);ctx.textAlign='left';
+
+  // player
+  drawPlayer();
+  // HUD
+  drawHUD();
+}
+
+function drawVillage(){
+  ctx.fillStyle='#0f1f0f';ctx.fillRect(0,0,W,H);
+  // ground pattern
+  for(let x=0;x<W;x+=32)for(let y=0;y<H;y+=32){
+    if((x/32+y/32)%2===0){ctx.fillStyle='#111f11';ctx.fillRect(x,y,32,32);}
+  }
+  // path
+  ctx.fillStyle='#1a1408';ctx.fillRect(220,0,80,H);
+
+  // houses
+  [[50,160,80,60,'#6a3010'],[390,140,80,60,'#5a2808'],[100,270,90,65,'#623015']].forEach(([x,y,w,h,c])=>{
+    ctx.fillStyle=c;ctx.fillRect(x,y,w,h);
+    ctx.fillStyle='#3a1808';ctx.fillRect(x,y,w,8);
+    ctx.fillStyle='#2a0808';ctx.fillRect(x+w/2-8,y+h-22,16,22);
+  });
+
+  // DUNGEON GATE at top - always visible
+  const dOpen=shards>=3;
+  ctx.fillStyle=dOpen?'#660000':'#220000';ctx.fillRect(180,0,160,60);
+  ctx.fillStyle=dOpen?'#cc2222':'#440000';
+  ctx.fillRect(215,5,90,50);
+  pxFont(8);ctx.textAlign='center';
+  ctx.fillStyle='#000';ctx.fillText('DUNGEON',W/2+1,26);
+  ctx.fillStyle=dOpen?'#ff5555':'#882222';ctx.fillText('DUNGEON',W/2,25);
+  ctx.fillStyle='#000';ctx.fillText(dOpen?'ENTER!':'LOCKED',W/2+1,42);
+  ctx.fillStyle=dOpen?'#ffaaaa':'#664444';ctx.fillText(dOpen?'ENTER!':'LOCKED',W/2,41);
+  ctx.textAlign='left';
+  if(dOpen){drawArrow(W/2,62,'GO UP!','#ff5555');}
+
+  // back arrow at bottom
+  ctx.fillStyle='rgba(255,255,255,0.08)';ctx.fillRect(0,H-28,W,28);
+  pxFont(7);ctx.textAlign='center';ctx.fillStyle='#555';ctx.fillText('↓  WALK DOWN TO GO BACK',W/2,H-10);ctx.textAlign='left';
+
+  // ground shard
+  if(!groundShard.taken){
+    const bob=Math.sin(tick*0.1)*5;
+    const glow=0.2+Math.sin(tick*0.1)*0.1;
+    ctx.fillStyle=`rgba(0,229,255,${glow})`;ctx.beginPath();ctx.arc(groundShard.x,groundShard.y,24,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#00e5ff';
+    ctx.fillRect(groundShard.x-3,groundShard.y-14+bob,6,28);
+    ctx.fillRect(groundShard.x-14,groundShard.y-3+bob,28,6);
+    pxFont(7);ctx.textAlign='center';
+    ctx.fillStyle='#000';ctx.fillText('SHARD',groundShard.x+1,groundShard.y-22+bob);
+    ctx.fillStyle='#00e5ff';ctx.fillText('SHARD',groundShard.x,groundShard.y-23+bob);
+    ctx.textAlign='left';
+    if(d(px,py,groundShard.x,groundShard.y)<40){
+      pxFont(8);ctx.textAlign='center';ctx.fillStyle='#00e5ff';ctx.fillText('SPACE!',groundShard.x,groundShard.y-38+bob);ctx.textAlign='left';
+    }
+  }
+
+  // villagers
+  villagers.forEach(v=>{
+    const near=d(px,py,v.x,v.y)<52;
+    if(near&&!v.talked){
+      ctx.fillStyle='rgba(255,220,80,0.15)';ctx.beginPath();ctx.arc(v.x,v.y,44,0,Math.PI*2);ctx.fill();
+      pxFont(8);ctx.textAlign='center';ctx.fillStyle='#ffe082';ctx.fillText('SPACE!',v.x,v.y-48);ctx.textAlign='left';
+    }
+    drawPerson(v.x,v.y,v.color,v.color2,v.name,v.talked?'#668866':'#fff');
+    if(v.talked&&v.givesShard){
+      pxFont(7);ctx.textAlign='center';ctx.fillStyle='#00e5ff';ctx.fillText('✓',v.x,v.y-38);ctx.textAlign='left';
+    }
+  });
+
+  drawPlayer();
+  drawHUD();
+}
+
+function drawDungeon(){
+  ctx.fillStyle='#060612';ctx.fillRect(0,0,W,H);
+  for(let x=0;x<W;x+=32)for(let y=0;y<H;y+=32){
+    ctx.fillStyle=(x/32+y/32)%2===0?'#0a0a1a':'#0c0c1e';
+    ctx.fillRect(x,y,32,32);
+  }
+  // grid lines
+  for(let x=0;x<W;x+=32){ctx.strokeStyle='#111122';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();}
+  for(let y=0;y<H;y+=32){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}
+
+  // altar at top
+  const allDead=enemies.every(e=>!e.alive);
+  const altarBob=Math.sin(tick*0.06)*4;
+  ctx.fillStyle=allDead?'rgba(255,215,0,0.25)':'rgba(255,215,0,0.06)';
+  ctx.beginPath();ctx.arc(260,80,50,0,Math.PI*2);ctx.fill();
+  // altar star
+  ctx.save();ctx.translate(260,80+altarBob);ctx.rotate(tick*0.02);
+  for(let i=0;i<8;i++){
+    ctx.save();ctx.rotate(i*Math.PI/4);
+    ctx.fillStyle=allDead?'#ffd700':'#554400';
+    ctx.fillRect(-3,-26,6,52);ctx.restore();
+  }
+  ctx.restore();
+  pxFont(7);ctx.textAlign='center';
+  ctx.fillStyle='#000';ctx.fillText('ALTAR',261,37);
+  ctx.fillStyle=allDead?'#ffd700':'#665500';ctx.fillText('ALTAR',260,36);
+  if(allDead){
+    ctx.fillStyle='#000';ctx.fillText('PRESS SPACE!',261,51);
+    ctx.fillStyle='#ffd700';ctx.fillText('PRESS SPACE!',260,50);
+  }else{
+    ctx.fillStyle='#443300';ctx.fillText('(defeat shadows first)',260,51);
+  }
+  ctx.textAlign='left';
+
+  // back arrow
+  ctx.fillStyle='rgba(255,255,255,0.06)';ctx.fillRect(0,H-28,W,28);
+  pxFont(7);ctx.textAlign='center';ctx.fillStyle='#333';ctx.fillText('↓  WALK DOWN TO FLEE',W/2,H-10);ctx.textAlign='left';
+
+  // enemies
+  enemies.forEach(e=>{
+    if(!e.alive)return;
+    const near=d(px,py,e.x,e.y)<55;
+    ctx.save();ctx.translate(e.x,e.y);ctx.rotate(tick*0.04);
+    ctx.fillStyle='#7c4dff';
+    ctx.beginPath();ctx.moveTo(0,-20);ctx.lineTo(18,14);ctx.lineTo(0,8);ctx.lineTo(-18,14);ctx.closePath();ctx.fill();
+    ctx.fillStyle='#b07dff';
+    ctx.beginPath();ctx.moveTo(0,-10);ctx.lineTo(8,7);ctx.lineTo(-8,7);ctx.closePath();ctx.fill();
+    ctx.restore();
+    // hp bar
+    ctx.fillStyle='#222';ctx.fillRect(e.x-20,e.y-34,40,6);
+    ctx.fillStyle=`hsl(${260+e.hp*20},70%,55%)`;ctx.fillRect(e.x-20,e.y-34,40*(e.hp/3),6);
+    pxFont(7);ctx.textAlign='center';
+    ctx.fillStyle='#cc88ff';ctx.fillText('SHADOW',e.x,e.y-38);
+    if(near){ctx.fillStyle='#ff4444';ctx.fillText('SPACE = HIT!',e.x,e.y-52);}
+    ctx.textAlign='left';
+  });
+
+  drawPlayer();
+  drawHUD();
+
+  if(won){
+    ctx.fillStyle='rgba(0,0,10,0.75)';ctx.fillRect(0,0,W,H);
+    pxFont(18);ctx.textAlign='center';
+    ctx.fillStyle='#000';ctx.fillText('YOU WIN!',W/2+2,H/2-18);
+    ctx.fillStyle='#ffd700';ctx.fillText('YOU WIN!',W/2,H/2-20);
+    pxFont(9);
+    ctx.fillStyle='#000';ctx.fillText('KINGDOM SAVED!',W/2+1,H/2+14);
+    ctx.fillStyle='#ffffff';ctx.fillText('KINGDOM SAVED!',W/2,H/2+12);
+    ctx.textAlign='left';
+  }
+}
+
+function drawPlayer(){
+  const flash=dmgcd>0&&Math.floor(tick/4)%2===0;
+  if(flash)return;
+  const bob=Math.sin(tick*0.18)*1.5;
+  // body
+  ctx.fillStyle='#3a5ea8';ctx.fillRect(px-9,py-12+bob,18,16);
+  // head
+  ctx.fillStyle='#e8b86d';ctx.fillRect(px-7,py-26+bob,14,16);
+  // hair
+  ctx.fillStyle='#5a3010';ctx.fillRect(px-8,py-28+bob,16,6);
+  // arms
+  ctx.fillStyle='#e8b86d';ctx.fillRect(px-15,py-10+bob,6,12);ctx.fillRect(px+9,py-10+bob,6,12);
+  // sword
+  ctx.fillStyle='#c0c0c0';ctx.fillRect(px+14,py-18+bob,3,20);
+  ctx.fillStyle='#8B5e00';ctx.fillRect(px+11,py-10+bob,9,4);
+  // name
+  pxFont(8);ctx.textAlign='center';
+  ctx.fillStyle='#000';ctx.fillText('LIA',px+1,py-34+bob);
+  ctx.fillStyle='#ffe082';ctx.fillText('LIA',px,py-35+bob);
+  ctx.textAlign='left';
+}
+
+function drawHUD(){
+  ctx.fillStyle='rgba(0,0,0,0.75)';ctx.fillRect(0,H-30,W,30);
+  pxFont(8);
+  ctx.fillStyle='#ef5350';ctx.fillText('HP: '+'♥'.repeat(hp)+'♡'.repeat(5-hp),8,H-10);
+  ctx.fillStyle='#00e5ff';ctx.fillText('SHARDS: '+shards+'/3',220,H-10);
+}
+
+function drawParticles(){
+  particles.forEach(p=>{
+    ctx.globalAlpha=Math.max(0,p.life);
+    ctx.fillStyle=p.col;ctx.beginPath();ctx.arc(p.x,p.y,p.r,0,Math.PI*2);ctx.fill();
+  });
+  ctx.globalAlpha=1;
+}
+
+function update(){
+  tick++;
+  if(!dialog&&!won){
+    let dx=0,dy=0;
+    if(keys['ArrowLeft']||keys['KeyA'])dx=-SPD;
+    if(keys['ArrowRight']||keys['KeyD'])dx=SPD;
+    if(keys['ArrowUp']||keys['KeyW'])dy=-SPD;
+    if(keys['ArrowDown']||keys['KeyS'])dy=SPD;
+    if(dx&&dy){dx*=0.707;dy*=0.707;}
+    px=Math.max(18,Math.min(W-18,px+dx));
+    py=Math.max(90,Math.min(H-32,py+dy));
+
+    if(scene==='WORLD'&&py<92){enterVillage();}
+    if(scene==='VILLAGE'&&py>H-34){backToWorld();}
+    if(scene==='VILLAGE'&&py<92&&shards>=3){enterDungeon();}
+    if(scene==='VILLAGE'&&py<92&&shards<3){
+      py=92;
+      setMsg(`<span style="color:#ff5252">DUNGEON IS LOCKED!</span> You need <span style="color:#00e5ff">${3-shards} more shard${3-shards!==1?'s':''}</span>. Talk to the villagers!`);
+    }
+    if(scene==='DUNGEON'&&py>H-34){backToVillage();}
+
+    if(scene==='DUNGEON'&&dmgcd<=0){
+      enemies.forEach(e=>{
+        if(!e.alive)return;
+        if(d(px,py,e.x,e.y)<28){
+          hp--;dmgcd=70;
+          burst(px,py,'#ff4444',8);
+          if(hp<=0){hp=5;backToVillage();enemies.forEach(e=>{e.hp=3;e.alive=true;});setMsg('<span style="color:#ff5252">You were defeated! Back in the village.</span>');}
+          else setMsg(`<span style="color:#ff5252">Ouch! HP: ${'♥'.repeat(hp)}</span>`);
+        }
+      });
+    }
+    if(dmgcd>0)dmgcd--;
+
+    enemies.forEach(e=>{
+      if(!e.alive)return;
+      e.x+=e.vx;
+      if(e.x<40||e.x>W-40)e.vx*=-1;
+    });
+  }
+
+  particles=particles.filter(p=>p.life>0);
+  particles.forEach(p=>{p.x+=p.vx;p.y+=p.vy;p.vx*=0.9;p.vy*=0.9;p.life-=0.033;p.r*=0.97;});
+
+  ctx.clearRect(0,0,W,H);
+  if(scene==='WORLD')drawWorld();
+  else if(scene==='VILLAGE')drawVillage();
+  else drawDungeon();
+  drawParticles();
+  requestAnimationFrame(update);
+}
+update();
+</script>
